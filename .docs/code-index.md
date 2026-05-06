@@ -41,7 +41,7 @@
 
 | 方法 | 命令 |
 |------|------|
-| `get_umo` | `/get_umo` |
+| `weibo_umo` | `/weibo_umo` |
 | `weibo_export` | `/weibo_export` |
 | `weibo_import` | `/weibo_import` |
 | `weibo_verify` | `/weibo_verify` |

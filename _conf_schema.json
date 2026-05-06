@@ -40,7 +40,7 @@
     "item_type": "string",
     "default": [],
     "description": "推送目标会话 ID",
-    "hint": "可以填写多个。通过指令 /get_umo 获取当前会话 ID"
+    "hint": "可以填写多个。通过指令 /weibo_umo 获取当前会话 ID"
   },
   "cookie_notification_target": {
     "type": "string",

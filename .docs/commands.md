@@ -2,7 +2,7 @@
 
 | 命令 | 功能 | 关键实现 |
 |------|------|----------|
-| `/get_umo` | 获取当前会话 ID | `event.unified_msg_origin` |
+| `/weibo_umo` | 获取当前会话 ID | `event.unified_msg_origin` |
 | `/weibo_verify` | 验证 Cookie 有效性 | 请求 `m.weibo.cn/api/config`，检查 `login` 字段 |
 | `/weibo_cookie <cookie>` | 更换 Cookie 并重载插件 | 更新 `self.config`，调用 `config_manager.save_config()`，尝试 `star_loader.reload()` |
 | `/weibo_check` | 立即检查第一个账号 | `check_weibo(uid, force_fetch=True)` |

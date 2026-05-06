@@ -30,7 +30,7 @@ DEFAULT_HOTSEARCH_TOP_N = 10
 DEFAULT_HOTSEARCH_TEMPLATE = "🔥 微博热搜榜 Top {top_n}\n⏰ 更新时间: {time}\n\n{items}"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.14.1", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.14.2", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -585,8 +585,8 @@ class WeiboMonitor(Star):
                     targets.append(item_str)
         return targets
 
-    @filter.command("get_umo")
-    async def get_umo(self, event: AstrMessageEvent):
+    @filter.command("weibo_umo")
+    async def weibo_umo(self, event: AstrMessageEvent):
         """获取当前会话的 ID (unified_msg_origin)，用于设置推送目标"""
         yield event.plain_result(
             f"当前会话 ID: {event.unified_msg_origin}\n请将此 ID 填入插件设置中的 target_conversation_id 项。"
