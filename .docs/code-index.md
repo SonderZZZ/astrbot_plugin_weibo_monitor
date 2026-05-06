@@ -29,10 +29,6 @@
 
 `_load_data`, `_save_data`, `get_kv_data`, `put_kv_data`
 
-## 相似度去重
-
-`_load_similarity_cache`, `_save_similarity_cache`, `_compute_simhash`, `_hamming_distance`, `_jaccard_similarity`, `_is_duplicate`, `_update_similarity_cache`
-
 ## 请求头与生命周期
 
 `get_headers`, `terminate`, `get_targets`

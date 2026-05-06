@@ -30,7 +30,7 @@ DEFAULT_HOTSEARCH_TOP_N = 10
 DEFAULT_HOTSEARCH_TEMPLATE = "🔥 微博热搜榜 Top {top_n}\n⏰ 更新时间: {time}\n\n{items}"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.14.2", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.14.3", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -609,6 +609,12 @@ class WeiboMonitor(Star):
     @filter.command("weibo_import")
     async def weibo_import(self, event: AstrMessageEvent, config_str: str = ""):
         """从导出的字符串导入配置"""
+        message_str: str = event.message_str or ""
+        if message_str:
+            parts = message_str.split(maxsplit=1)
+            if len(parts) > 1:
+                config_str = parts[1].strip()
+
         if not config_str:
             yield event.plain_result("❌ 请提供配置字符串。用法: /weibo_import <配置字符串>")
             return
@@ -689,6 +695,12 @@ class WeiboMonitor(Star):
     @filter.command("weibo_cookie")
     async def weibo_cookie(self, event: AstrMessageEvent, cookie: str = ""):
         """更换微博 Cookie 并自动重载插件"""
+        message_str: str = event.message_str or ""
+        if message_str:
+            parts = message_str.split(maxsplit=1)
+            if len(parts) > 1:
+                cookie = parts[1].strip()
+
         if not cookie:
             yield event.plain_result("❌ 请提供 Cookie。用法: /weibo_cookie <Cookie字符串>")
             return
