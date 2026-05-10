@@ -33,6 +33,10 @@
 
 `get_headers`, `terminate`, `get_targets`
 
+## 订阅分组路由
+
+`_resolve_uid_from_config`, `_get_all_subscribed_sessions`, `_get_targets_for_uid`
+
 ## 用户命令
 
 | 方法 | 命令 |

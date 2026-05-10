@@ -30,7 +30,7 @@ DEFAULT_HOTSEARCH_TOP_N = 10
 DEFAULT_HOTSEARCH_TEMPLATE = "🔥 微博热搜榜 Top {top_n}\n⏰ 更新时间: {time}\n\n{items}"
 
 
-@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话。", "v1.14.3", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
+@register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话，支持按会话分组订阅不同博主。", "v1.15.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
 class WeiboMonitor(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -585,6 +585,64 @@ class WeiboMonitor(Star):
                     targets.append(item_str)
         return targets
 
+    @staticmethod
+    def _resolve_uid_from_config(item: str) -> Optional[str]:
+        item = item.strip()
+        if item.isdigit():
+            return item
+        match = re.search(r"weibo\.(com|cn)/u/(\d+)", item)
+        if match:
+            return match.group(2)
+        return None
+
+    def _get_all_subscribed_sessions(self) -> set:
+        mappings = self.config.get("subscription_mappings", [])
+        if isinstance(mappings, str):
+            mappings = [m.strip() for m in mappings.split("\n") if m.strip()]
+        if not isinstance(mappings, list):
+            return set()
+
+        sessions = set()
+        for mapping in mappings:
+            mapping = str(mapping).strip()
+            if ":" not in mapping:
+                continue
+            parts = mapping.split(":", 1)
+            session_id = parts[0].strip()
+            if session_id:
+                sessions.add(session_id)
+        return sessions
+
+    def _get_targets_for_uid(self, uid: str) -> List[str]:
+        subscription_targets = set()
+        all_subscribed_sessions = self._get_all_subscribed_sessions()
+
+        mappings = self.config.get("subscription_mappings", [])
+        if isinstance(mappings, str):
+            mappings = [m.strip() for m in mappings.split("\n") if m.strip()]
+        if isinstance(mappings, list):
+            for mapping in mappings:
+                mapping = str(mapping).strip()
+                if ":" not in mapping:
+                    continue
+                parts = mapping.split(":", 1)
+                session_id = parts[0].strip()
+                uids_str = parts[1].strip()
+                if not session_id or not uids_str:
+                    continue
+                subscribed_uids = [u.strip() for u in uids_str.split(",") if u.strip()]
+                for sub_item in subscribed_uids:
+                    if self._resolve_uid_from_config(sub_item) == uid:
+                        subscription_targets.add(session_id)
+                        break
+
+        global_targets = self.get_targets()
+        for target in global_targets:
+            if target not in all_subscribed_sessions:
+                subscription_targets.add(target)
+
+        return list(subscription_targets)
+
     @filter.command("weibo_umo")
     async def weibo_umo(self, event: AstrMessageEvent):
         """获取当前会话的 ID (unified_msg_origin)，用于设置推送目标"""
@@ -757,7 +815,6 @@ class WeiboMonitor(Star):
 
     @filter.command("weibo_check")
     async def weibo_check(self, event: AstrMessageEvent):
-        """立即检查并发送列表中第一个账号的最新微博信息 (仅限第一个)"""
         urls = self._parse_urls(self.config.get("weibo_urls", []))
         if not urls:
             yield event.plain_result("❌ 未在插件设置中配置监控URL。")
@@ -765,9 +822,7 @@ class WeiboMonitor(Star):
             
         yield event.plain_result(f"🔍 正在检查首个微博账号的最新动态...")
         
-        # 只取第一个 URL
         url = urls[0]
-        targets = self.get_targets()
         msg_format = self.message_format
         
         uid = await self.parse_uid(url)
@@ -777,16 +832,16 @@ class WeiboMonitor(Star):
 
         latest_posts = await self.check_weibo(uid, force_fetch=True)
         if latest_posts:
-            await self._send_new_posts(latest_posts, targets, msg_format, event.unified_msg_origin, skip_log=True)
+            uid_targets = self._get_targets_for_uid(uid)
+            if uid_targets:
+                await self._send_new_posts(latest_posts, uid_targets, msg_format, event.unified_msg_origin, skip_log=True)
             yield event.plain_result(f"✅ {latest_posts[0].get('username')} 已发送最新动态。")
         else:
             yield event.plain_result(f"ℹ️ UID {uid} 未获取到有效微博。")
 
     @filter.command("weibo_check_all")
     async def weibo_check_all(self, event: AstrMessageEvent):
-        """立即检查并发送列表中所有账号的最新微博信息"""
         urls = self._parse_urls(self.config.get("weibo_urls", []))
-        targets = self.get_targets()
         msg_format = self.message_format
         
         base_req_interval = self.config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
@@ -813,7 +868,9 @@ class WeiboMonitor(Star):
 
             latest_posts = await self.check_weibo(uid, force_fetch=True)
             if latest_posts:
-                await self._send_new_posts(latest_posts, targets, msg_format, event.unified_msg_origin, skip_log=True)
+                uid_targets = self._get_targets_for_uid(uid)
+                if uid_targets:
+                    await self._send_new_posts(latest_posts, uid_targets, msg_format, event.unified_msg_origin, skip_log=True)
                 results.append(f"✅ {latest_posts[0].get('username')} 已发送最新动态。")
             else:
                 results.append(f"ℹ️ UID {uid} 未获取到有效微博。")
@@ -845,13 +902,21 @@ class WeiboMonitor(Star):
 
     @filter.command("weibo_status")
     async def weibo_status(self, event: AstrMessageEvent):
-        """查看当前监控状态"""
         urls = self._parse_urls(self.config.get("weibo_urls", []))
         targets = self.get_targets()
+        subscribed_sessions = self._get_all_subscribed_sessions()
         
         status_lines = ["📊 微博监控当前状态："]
         status_lines.append(f"- 监控账号数：{len(urls)} 个")
         status_lines.append(f"- 推送目标数：{len(targets)} 个")
+        
+        if subscribed_sessions:
+            status_lines.append(f"- 订阅分组：✅ 已为 {len(subscribed_sessions)} 个会话配置独立订阅")
+            broadcast_count = len([t for t in targets if t not in subscribed_sessions])
+            if broadcast_count > 0:
+                status_lines.append(f"  （{broadcast_count} 个全局目标接收全部推送）")
+        else:
+            status_lines.append(f"- 订阅分组：未配置（所有目标会话接收全部推送）")
         
         check_interval = self.config.get("check_interval", DEFAULT_CHECK_INTERVAL)
         status_lines.append(f"- 检查间隔：{check_interval} 分钟")
@@ -860,7 +925,10 @@ class WeiboMonitor(Star):
         cookie_status = "✅ 已配置" if cookie else "❌ 未配置"
         status_lines.append(f"- Cookie：{cookie_status}")
         
-        status_lines.append(f"- 自动推送：{'✅ 开启' if targets and cookie else '❌ 关闭'}")
+        has_active_push = bool(targets and cookie)
+        if subscribed_sessions:
+            has_active_push = bool(cookie and (subscribed_sessions or any(t not in subscribed_sessions for t in targets)))
+        status_lines.append(f"- 自动推送：{'✅ 开启' if has_active_push else '❌ 关闭'}")
         
         daily_summary = self.config.get("enable_daily_summary", False)
         if daily_summary:
@@ -1100,7 +1168,7 @@ class WeiboMonitor(Star):
                             
                             cycle_success = True
                             try:
-                                await self._process_monitor_cycle(urls, base_req_interval, req_jitter, targets, msg_format)
+                                await self._process_monitor_cycle(urls, base_req_interval, req_jitter, msg_format)
                             except Exception as cycle_error:
                                 self.plugin_logger.error(f"监控周期执行失败: {cycle_error}")
                                 cycle_success = False
@@ -1143,8 +1211,7 @@ class WeiboMonitor(Star):
         return urls
 
     async def _process_monitor_cycle(self, urls: List[str], base_req_interval: int, req_jitter: int, 
-                                   targets: List[str], msg_format: str):
-        """处理单个监控周期的所有URL检查"""
+                                   msg_format: str):
         for i, url in enumerate(urls):
             try:
                 if i > 0:
@@ -1158,7 +1225,11 @@ class WeiboMonitor(Star):
 
                 new_posts = await self.check_weibo(uid)
                 if new_posts:
-                    await self._send_new_posts(new_posts, targets, msg_format)
+                    uid_targets = self._get_targets_for_uid(uid)
+                    if uid_targets:
+                        await self._send_new_posts(new_posts, uid_targets, msg_format)
+                    else:
+                        self.plugin_logger.debug(f"WeiboMonitor: UID {uid} 没有可推送的目标会话")
             except Exception as e:
                 self.plugin_logger.error(f"WeiboMonitor: 检查URL {url} 时出错: {e}")
 

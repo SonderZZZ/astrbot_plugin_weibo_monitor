@@ -42,6 +42,13 @@
     "description": "推送目标会话 ID",
     "hint": "可以填写多个。通过指令 /weibo_umo 获取当前会话 ID"
   },
+  "subscription_mappings": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "会话订阅映射",
+    "hint": "格式: 会话ID: uid或链接,uid或链接。每行一个会话的订阅配置。\n示例: group_abc123: 1234567890, https://weibo.com/u/9876543210\n配置后，该会话只接收已订阅博主的推送；未配置的全局目标仍接收全部推送。"
+  },
   "cookie_notification_target": {
     "type": "string",
     "default": "",

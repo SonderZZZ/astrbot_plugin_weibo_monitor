@@ -12,6 +12,10 @@
 - `weibo_urls` (list): 监控的微博用户 URL/UID 列表
 - `target_conversation_id` (list): 推送目标会话 ID 列表
 
+## 订阅分组
+
+- `subscription_mappings` (list): 会话订阅映射列表，格式 `会话ID: uid或链接,uid或链接`。配置后该会话仅接收已订阅博主的推送；未配置的全局目标保持接收全部推送。
+
 ## 监控控制
 
 - `check_interval` (int, 默认 10): 检查间隔（分钟）
