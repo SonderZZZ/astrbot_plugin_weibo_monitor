@@ -1123,7 +1123,7 @@ class WeiboMonitor(Star):
                         self.plugin_logger.warning("WeiboMonitor: 未配置微博Cookie，跳过本轮检查。请尽快配置！")
                     elif not urls:
                         self.plugin_logger.debug("WeiboMonitor: 未配置监控URL")
-                    elif not targets:
+                    elif not targets and not self._get_all_subscribed_sessions():
                         self.plugin_logger.debug("WeiboMonitor: 未配置推送目标会话ID")
                     else:
                         # 检查 Cookie 健康
@@ -1148,7 +1148,7 @@ class WeiboMonitor(Star):
                                     if not notify_targets:
                                         notify_targets = targets
                                 else:
-                                    notify_targets = targets
+                                    notify_targets = list(set(targets) | self._get_all_subscribed_sessions())
                                     
                                 for target in notify_targets:
                                     try:

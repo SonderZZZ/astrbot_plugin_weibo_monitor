@@ -55,6 +55,11 @@
 2. 在 `main.py` 中通过 `self.config.get("key", default)` 读取
 3. 新功能的配置项同时更新 `README.md` 的配置说明
 
+**配置项 description 标签规范**：
+- 所有全局配置项的 `description` 必须以 `【全局】` 前缀开头
+- 仅会话分组配置项（如 `subscription_mappings`）以 `【分组】` 前缀开头
+- 此规范确保 WebUI 中配置项的作用范围一目了然
+
 ### 添加新 API 请求
 
 - 使用 `self.client` (httpx.AsyncClient) 发起请求
