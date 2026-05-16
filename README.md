@@ -13,6 +13,7 @@
 - **Cookie 配置**：必须配置微博 Cookie 才能正常抓取数据，确保稳定性。
 - **灵活过滤**：支持屏蔽词过滤、白名单关键词过滤，可选择是否推送原创/转发微博。
 - **消息自定义**：支持自定义推送消息格式，满足不同需求。
+- **图文视频推送**：推送微博正文时可同步发送对应图片和视频，转发微博会同时提取被转发内容中的媒体。
 - **配置导入导出**：支持配置的导入导出，方便迁移和备份。
 - **数据持久化**：自动持久化监控数据，重启后不会重复推送历史微博。
 - **错误恢复**：内置请求重试和异常处理机制，保证监控稳定性。
@@ -57,18 +58,21 @@
    - `filter_keywords`: 屏蔽词列表，包含这些关键词的微博将不会被推送，多个关键词用逗号分隔。
    - `whitelist_keywords`: 关键词白名单，只有微博正文包含白名单关键词时才会推送。为空时不限制。
    - `send_original`: 是否推送原创微博，默认 `true`。
-  - `send_forward`: 是否推送转发微博，默认 `true`。
-  - `enable_plugin_log`: 是否开启运行日志 (plugin.log)，默认 `false`。
-  - `plugin_log_max_size`: 运行日志文件最大大小 (MB)，默认 `1`。
-  - `enable_daily_log`: 是否开启每日推送记录，默认 `false`。开启后，初始化监控时会自动记录获取到的历史微博，热搜推送也会同步记录。
-  - `enable_daily_summary`: 是否开启每日发送总结，默认 `false`。总结中包含微博动态和热搜推送次数。
-  - `daily_summary_time`: 每日总结推送时间，默认 `08:00`。
-  - `enable_hotsearch`: 是否开启微博热搜监控，默认 `false`。**热搜监控默认无需 Cookie，遇风控拦截自动使用 Cookie 兜底**。
-  - `hotsearch_interval`: 热搜推送间隔（分钟），默认 `60`（1 小时）。
-  - `hotsearch_top_n`: 推送热搜前 N 条，默认 `10`。
-  - `hotsearch_filter_ads`: 是否过滤热搜广告位，默认 `true`（开启）。
-  - `hotsearch_show_link`: 是否显示每条热搜的微博搜索链接，默认 `true`（开启）。关闭后仅显示序号和标题。
-  - `hotsearch_message_format`: 热搜推送消息格式，支持 `{top_n}`、`{time}`、`{items}` 变量。
+   - `send_forward`: 是否推送转发微博，默认 `true`。
+   - `send_media`: 是否随微博推送图片和视频，默认 `true`。开启后会提取微博正文及转发微博中的媒体并随消息发送。
+   - `max_images_per_post`: 单条微博最多推送图片数，默认 `9`，设置为 `0` 可不推送图片。
+   - `max_videos_per_post`: 单条微博最多推送视频数，默认 `1`，设置为 `0` 可不推送视频。视频发送能力取决于具体消息平台。
+   - `enable_plugin_log`: 是否开启运行日志 (plugin.log)，默认 `false`。
+   - `plugin_log_max_size`: 运行日志文件最大大小 (MB)，默认 `1`。
+   - `enable_daily_log`: 是否开启每日推送记录，默认 `false`。开启后，初始化监控时会自动记录获取到的历史微博，热搜推送也会同步记录。
+   - `enable_daily_summary`: 是否开启每日发送总结，默认 `false`。总结中包含微博动态和热搜推送次数。
+   - `daily_summary_time`: 每日总结推送时间，默认 `08:00`。
+   - `enable_hotsearch`: 是否开启微博热搜监控，默认 `false`。**热搜监控默认无需 Cookie，遇风控拦截自动使用 Cookie 兜底**。
+   - `hotsearch_interval`: 热搜推送间隔（分钟），默认 `60`（1 小时）。
+   - `hotsearch_top_n`: 推送热搜前 N 条，默认 `10`。
+   - `hotsearch_filter_ads`: 是否过滤热搜广告位，默认 `true`（开启）。
+   - `hotsearch_show_link`: 是否显示每条热搜的微博搜索链接，默认 `true`（开启）。关闭后仅显示序号和标题。
+   - `hotsearch_message_format`: 热搜推送消息格式，支持 `{top_n}`、`{time}`、`{items}` 变量。
 
 ## 关键词过滤规则
 
@@ -135,6 +139,16 @@
 
 链接: {link}
 ```
+
+## 图片与视频推送
+
+插件默认会在推送微博文字的同时，提取并发送该微博对应的图片和视频：
+
+- 原创微博：提取正文中的图片和视频。
+- 转发微博：除了转发正文，也会提取被转发微博中的图片和视频。
+- 图片默认最多推送 9 张，视频默认最多推送 1 个，可分别通过 `max_images_per_post` 和 `max_videos_per_post` 调整。
+- 如果你只想推送文字，可将 `send_media` 设为 `false`。
+- 不同消息平台对视频直发的支持程度不同；若平台不支持视频消息，文字和图片推送不受影响，错误会记录到插件日志中。
 
 ## 热搜监控
 

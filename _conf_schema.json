@@ -85,6 +85,24 @@
     "default": true,
     "description": "【全局】是否推送转发微博"
   },
+  "send_media": {
+    "type": "bool",
+    "default": true,
+    "description": "【全局】是否随微博推送图片和视频",
+    "hint": "开启后会从微博正文及转发微博中提取图片、视频，并跟随文字消息一起推送。部分平台可能不支持视频直发。"
+  },
+  "max_images_per_post": {
+    "type": "int",
+    "default": 9,
+    "description": "【全局】单条微博最多推送图片数",
+    "hint": "默认最多 9 张，设置为 0 可不推送图片。"
+  },
+  "max_videos_per_post": {
+    "type": "int",
+    "default": 1,
+    "description": "【全局】单条微博最多推送视频数",
+    "hint": "默认最多 1 个，设置为 0 可不推送视频。视频发送能力取决于具体消息平台。"
+  },
   "enable_plugin_log": {
     "type": "bool",
     "default": false,

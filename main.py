@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from functools import wraps
 from urllib.parse import quote
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+import astrbot.api.message_components as Comp
 from astrbot.api.star import Context, Star, register, StarTools
 from bs4 import BeautifulSoup
 
@@ -28,6 +29,8 @@ HOTSEARCH_API_URL = "https://weibo.com/ajax/side/hotSearch"
 DEFAULT_HOTSEARCH_INTERVAL = 60
 DEFAULT_HOTSEARCH_TOP_N = 10
 DEFAULT_HOTSEARCH_TEMPLATE = "🔥 微博热搜榜 Top {top_n}\n⏰ 更新时间: {time}\n\n{items}"
+DEFAULT_MAX_IMAGES_PER_POST = 9
+DEFAULT_MAX_VIDEOS_PER_POST = 1
 
 
 @register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话，支持按会话分组订阅不同博主。", "v1.15.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
@@ -1233,6 +1236,142 @@ class WeiboMonitor(Star):
             except Exception as e:
                 self.plugin_logger.error(f"WeiboMonitor: 检查URL {url} 时出错: {e}")
 
+    def _normalize_media_url(self, url: Any) -> str:
+        """规范化微博返回的媒体 URL。"""
+        if not url:
+            return ""
+        url = str(url).strip()
+        if not url:
+            return ""
+        if url.startswith("//"):
+            return f"https:{url}"
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        return ""
+
+    def _pick_image_url(self, pic: Dict[str, Any]) -> str:
+        """从微博图片对象中选取尽量高清的图片 URL。"""
+        for key in ("large", "original", "largest", "bmiddle", "middleplus"):
+            value = pic.get(key)
+            if isinstance(value, dict):
+                url = self._normalize_media_url(value.get("url"))
+                if url:
+                    return url
+            elif isinstance(value, str):
+                url = self._normalize_media_url(value)
+                if url:
+                    return url
+
+        for key in ("original_pic", "bmiddle_pic", "thumbnail_pic", "url"):
+            url = self._normalize_media_url(pic.get(key))
+            if url:
+                return url
+        return ""
+
+    def _extract_image_urls_from_mblog(self, mblog: Dict[str, Any]) -> List[str]:
+        """提取单条微博中的图片 URL。"""
+        urls: List[str] = []
+        for pic in mblog.get("pics") or []:
+            if not isinstance(pic, dict):
+                continue
+            url = self._pick_image_url(pic)
+            if url and url not in urls:
+                urls.append(url)
+
+        # 部分微博将单图放在独立字段中，pics 为空时兜底读取。
+        for key in ("original_pic", "bmiddle_pic", "thumbnail_pic"):
+            url = self._normalize_media_url(mblog.get(key))
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_video_url_from_media_info(self, media_info: Dict[str, Any]) -> str:
+        """从微博 media_info 中选取可直接发送的视频 URL。"""
+        candidate_keys = (
+            "mp4_720p_mp4",
+            "mp4_hd_url",
+            "mp4_sd_url",
+            "stream_url_hd",
+            "stream_url",
+        )
+        for key in candidate_keys:
+            url = self._normalize_media_url(media_info.get(key))
+            if url:
+                return url
+
+        for item in media_info.get("playback_list") or []:
+            if not isinstance(item, dict):
+                continue
+            play_info = item.get("play_info") or {}
+            url = self._normalize_media_url(play_info.get("url"))
+            if url:
+                return url
+        return ""
+
+    def _extract_video_urls_from_mblog(self, mblog: Dict[str, Any]) -> List[str]:
+        """提取单条微博中的视频 URL。"""
+        urls: List[str] = []
+        page_info = mblog.get("page_info") or {}
+        if isinstance(page_info, dict):
+            media_info = page_info.get("media_info") or {}
+            if isinstance(media_info, dict):
+                url = self._extract_video_url_from_media_info(media_info)
+                if url:
+                    urls.append(url)
+
+            for key in ("page_url", "object_url"):
+                url = self._normalize_media_url(page_info.get(key))
+                if url and any(mark in url.lower() for mark in (".mp4", "video")) and url not in urls:
+                    urls.append(url)
+
+        for media_info in mblog.get("mix_media_info", {}).get("items", []) if isinstance(mblog.get("mix_media_info"), dict) else []:
+            if not isinstance(media_info, dict):
+                continue
+            data = media_info.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            url = self._extract_video_url_from_media_info(data.get("media_info") or data)
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_media_from_mblog(self, mblog: Dict[str, Any]) -> Dict[str, List[str]]:
+        """提取微博正文和被转发微博中的图片、视频 URL。"""
+        images: List[str] = []
+        videos: List[str] = []
+
+        def add_media(source: Dict[str, Any]):
+            for image_url in self._extract_image_urls_from_mblog(source):
+                if image_url not in images:
+                    images.append(image_url)
+            for video_url in self._extract_video_urls_from_mblog(source):
+                if video_url not in videos:
+                    videos.append(video_url)
+
+        add_media(mblog)
+        retweeted = mblog.get("retweeted_status")
+        if isinstance(retweeted, dict):
+            add_media(retweeted)
+
+        max_images = max(0, int(self.config.get("max_images_per_post", DEFAULT_MAX_IMAGES_PER_POST)))
+        max_videos = max(0, int(self.config.get("max_videos_per_post", DEFAULT_MAX_VIDEOS_PER_POST)))
+        return {
+            "images": images[:max_images],
+            "videos": videos[:max_videos],
+        }
+
+    def _build_post_message_chain(self, content: str, post: Dict[str, Any]) -> MessageChain:
+        """构建包含文字、图片和视频的微博推送消息链。"""
+        chain = MessageChain().message(content)
+        if not self.config.get("send_media", True):
+            return chain
+
+        for image_url in post.get("images", []):
+            chain.chain.append(Comp.Image.fromURL(image_url))
+        for video_url in post.get("videos", []):
+            chain.chain.append(Comp.Video.fromURL(video_url))
+        return chain
+
     async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str, 
                                fallback_target: str = None, skip_log: bool = False):
         """发送新微博到指定目标"""
@@ -1248,7 +1387,7 @@ class WeiboMonitor(Star):
                 weibo=post["text"],
                 link=post["link"],
             )
-            chain = MessageChain().message(content)
+            chain = self._build_post_message_chain(content, post)
             
             send_targets = targets
             
@@ -1263,6 +1402,17 @@ class WeiboMonitor(Star):
                     sent_count += 1
                 except Exception as e:
                     self.plugin_logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+                    if post.get("images") or post.get("videos"):
+                        try:
+                            await self.context.send_message(target, MessageChain().message(content))
+                            sent_count += 1
+                            self.plugin_logger.warning(
+                                f"WeiboMonitor: 已向 {target} 降级推送纯文本内容，媒体发送失败"
+                            )
+                        except Exception as fallback_error:
+                            self.plugin_logger.error(
+                                f"WeiboMonitor: 降级推送纯文本到目标 {target} 仍失败: {fallback_error}"
+                            )
             
             if sent_count > 0:
                 self.plugin_logger.info(
@@ -1498,11 +1648,14 @@ class WeiboMonitor(Star):
             created_at_raw = mblog.get("created_at")
             created_at = self._parse_weibo_time(created_at_raw)
             
+            media = self._extract_media_from_mblog(mblog)
             new_posts.append({
                 "text": text, 
                 "link": link, 
                 "username": username,
-                "created_at": created_at
+                "created_at": created_at,
+                "images": media["images"],
+                "videos": media["videos"],
             })
 
             if force_fetch:
