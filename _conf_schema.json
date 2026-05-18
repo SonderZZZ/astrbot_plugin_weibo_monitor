@@ -42,6 +42,13 @@
     "description": "【全局】推送目标会话 ID",
     "hint": "可以填写多个。通过指令 /weibo_umo 获取当前会话 ID"
   },
+  "hotsearch_target_conversation_id": {
+    "type": "list",
+    "item_type": "string",
+    "default": [],
+    "description": "【热搜】热搜推送目标会话 ID",
+    "hint": "可单独指定微博热搜推送到哪些会话。为空时兼容使用 target_conversation_id；通过 /weibo_umo 获取当前会话 ID。"
+  },
   "subscription_mappings": {
     "type": "list",
     "item_type": "string",
@@ -54,6 +61,12 @@
     "default": "",
     "description": "【全局】Cookie 失效通知目标",
     "hint": "可选。如果不填写，则向 '推送目标会话 ID' 中所有的群/账号发送通知；如果填写，则仅向该 ID 发送通知。"
+  },
+  "cookie_notification_interval": {
+    "type": "int",
+    "default": 60,
+    "description": "【全局】Cookie 异常提醒间隔（分钟）",
+    "hint": "Cookie 未配置或失效时的重复提醒间隔，默认 60 分钟，避免刷屏。"
   },
   "message_format": {
     "type": "string",
@@ -102,6 +115,18 @@
     "default": 1,
     "description": "【全局】单条微博最多推送视频数",
     "hint": "默认最多 1 个，设置为 0 可不推送视频。视频发送能力取决于具体消息平台。"
+  },
+  "telegram_bot_token": {
+    "type": "string",
+    "default": "",
+    "description": "【Telegram】Bot Token（用于合并图文视频为单条 Telegram 消息）",
+    "hint": "如果希望一条微博的图片/视频在 Telegram 中合并成一条媒体消息或媒体组，请填写 Telegram Bot Token。留空时媒体不会通过 Telegram Bot API 合并发送。"
+  },
+  "telegram_media_group_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "【Telegram】启用合并媒体推送",
+    "hint": "开启后使用 Telegram sendPhoto/sendVideo/sendMediaGroup，将一条微博的图片、视频和文字 caption 合并发送；关闭后使用 AstrBot 默认发送方式。"
   },
   "enable_plugin_log": {
     "type": "bool",
