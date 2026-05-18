@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from functools import wraps
 from urllib.parse import quote
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+import astrbot.api.message_components as Comp
 from astrbot.api.star import Context, Star, register, StarTools
 from bs4 import BeautifulSoup
 
@@ -28,6 +29,11 @@ HOTSEARCH_API_URL = "https://weibo.com/ajax/side/hotSearch"
 DEFAULT_HOTSEARCH_INTERVAL = 60
 DEFAULT_HOTSEARCH_TOP_N = 10
 DEFAULT_HOTSEARCH_TEMPLATE = "🔥 微博热搜榜 Top {top_n}\n⏰ 更新时间: {time}\n\n{items}"
+DEFAULT_MAX_IMAGES_PER_POST = 9
+DEFAULT_MAX_VIDEOS_PER_POST = 1
+DEFAULT_COOKIE_NOTIFICATION_INTERVAL = 60  # Cookie 异常提醒间隔（分钟）
+TELEGRAM_CAPTION_LIMIT = 1024
+TELEGRAM_MEDIA_GROUP_LIMIT = 10
 
 
 @register("astrbot_plugin_weibo_monitor", "Sayaka", "定时监控微博用户动态并推送到指定会话，支持按会话分组订阅不同博主。", "v1.15.0", "https://github.com/jiantoucn/astrbot_plugin_weibo_monitor")
@@ -569,21 +575,60 @@ class WeiboMonitor(Star):
         await self.client.aclose()
         self.plugin_logger.info("WeiboMonitor 插件已停止")
 
+    def _parse_config_list(self, value: Any, separators: Tuple[str, ...] = (",", "\n")) -> List[str]:
+        """解析配置中的字符串/列表，兼容逗号和换行分隔。"""
+        if not value:
+            return []
+
+        raw_items = value if isinstance(value, list) else [value]
+        result: List[str] = []
+        for item in raw_items:
+            item_str = str(item).strip()
+            if not item_str:
+                continue
+            parts = [item_str]
+            for sep in separators:
+                split_parts: List[str] = []
+                for part in parts:
+                    split_parts.extend(part.split(sep))
+                parts = split_parts
+            for part in parts:
+                part = part.strip()
+                if part and part not in result:
+                    result.append(part)
+        return result
+
     def get_targets(self) -> List[str]:
-        targets_raw = self.config.get("target_conversation_id", [])
-        if isinstance(targets_raw, str):
-            return [t.strip() for t in targets_raw.split(",") if t.strip()]
-        
-        # 兼容处理列表中包含逗号分隔字符串的情况
-        targets = []
-        if isinstance(targets_raw, list):
-            for item in targets_raw:
-                item_str = str(item).strip()
-                if "," in item_str:
-                    targets.extend([t.strip() for t in item_str.split(",") if t.strip()])
-                elif item_str:
-                    targets.append(item_str)
-        return targets
+        """获取微博用户动态推送目标。"""
+        return self._parse_config_list(self.config.get("target_conversation_id", []))
+
+    def get_hotsearch_targets(self) -> List[str]:
+        """获取热搜推送目标；未单独配置时兼容使用微博动态推送目标。"""
+        targets = self._parse_config_list(self.config.get("hotsearch_target_conversation_id", []))
+        return targets or self.get_targets()
+
+    def get_cookie_notification_targets(self) -> List[str]:
+        """获取 Cookie 异常提醒目标。"""
+        explicit_targets = self._parse_config_list(self.config.get("cookie_notification_target", []))
+        if explicit_targets:
+            return explicit_targets
+
+        targets = set(self.get_targets())
+        targets.update(self.get_hotsearch_targets())
+        targets.update(self._get_all_subscribed_sessions())
+        return list(targets)
+
+    @staticmethod
+    def _split_subscription_mapping(mapping: str) -> Tuple[str, str]:
+        """拆分订阅映射，兼容含冒号的 unified_msg_origin。"""
+        mapping = str(mapping).strip()
+        umo_parts = mapping.split(":", 3)
+        if len(umo_parts) == 4 and all(part.strip() for part in umo_parts[:3]):
+            return ":".join(part.strip() for part in umo_parts[:3]), umo_parts[3].strip()
+        if ":" in mapping:
+            session_id, uids_str = mapping.split(":", 1)
+            return session_id.strip(), uids_str.strip()
+        return "", ""
 
     @staticmethod
     def _resolve_uid_from_config(item: str) -> Optional[str]:
@@ -605,10 +650,7 @@ class WeiboMonitor(Star):
         sessions = set()
         for mapping in mappings:
             mapping = str(mapping).strip()
-            if ":" not in mapping:
-                continue
-            parts = mapping.split(":", 1)
-            session_id = parts[0].strip()
+            session_id, _ = self._split_subscription_mapping(mapping)
             if session_id:
                 sessions.add(session_id)
         return sessions
@@ -623,11 +665,7 @@ class WeiboMonitor(Star):
         if isinstance(mappings, list):
             for mapping in mappings:
                 mapping = str(mapping).strip()
-                if ":" not in mapping:
-                    continue
-                parts = mapping.split(":", 1)
-                session_id = parts[0].strip()
-                uids_str = parts[1].strip()
+                session_id, uids_str = self._split_subscription_mapping(mapping)
                 if not session_id or not uids_str:
                     continue
                 subscribed_uids = [u.strip() for u in uids_str.split(",") if u.strip()]
@@ -647,7 +685,10 @@ class WeiboMonitor(Star):
     async def weibo_umo(self, event: AstrMessageEvent):
         """获取当前会话的 ID (unified_msg_origin)，用于设置推送目标"""
         yield event.plain_result(
-            f"当前会话 ID: {event.unified_msg_origin}\n请将此 ID 填入插件设置中的 target_conversation_id 项。"
+            f"当前会话 ID: {event.unified_msg_origin}\n"
+            f"- 微博用户动态：填入 target_conversation_id\n"
+            f"- 微博热搜：填入 hotsearch_target_conversation_id（不填则兼容使用 target_conversation_id）\n"
+            f"- Cookie 提醒：填入 cookie_notification_target（不填则通知所有已配置推送目标）"
         )
 
     @filter.command("weibo_export")
@@ -713,12 +754,70 @@ class WeiboMonitor(Star):
             self.plugin_logger.error(f"WeiboMonitor: 导入配置失败: {e}")
             yield event.plain_result(f"❌ 导入配置失败: {e}")
 
+    def _cookie_help_text(self) -> str:
+        return (
+            "🍪 Cookie 获取/更新方式：\n"
+            "1. 用电脑浏览器打开 https://m.weibo.cn/ 并登录微博。\n"
+            "2. 按 F12 打开开发者工具，切到 Network/网络。\n"
+            "3. 刷新页面，点任意 m.weibo.cn 请求，在 Request Headers 中复制完整 Cookie。\n"
+            "4. 在当前会话发送：/weibo_cookie <复制的Cookie>\n"
+            "5. 发送 /weibo_verify 可立即验证是否有效。\n\n"
+            "提示：Cookie 属于登录凭证，请不要发到公开群；建议发给机器人私聊或只给管理员可见的会话。"
+        )
+
+    async def _notify_cookie_issue(self, reason: str, force: bool = False):
+        """向配置目标发送 Cookie 异常提醒，并按间隔限流避免刷屏。"""
+        now_ts = int(self._get_utc8_now().timestamp())
+        interval_minutes = max(
+            1,
+            int(self.config.get("cookie_notification_interval", DEFAULT_COOKIE_NOTIFICATION_INTERVAL)),
+        )
+        last_notify_ts = int(self._data.get("last_cookie_issue_notify_ts", 0) or 0)
+        if not force and now_ts - last_notify_ts < interval_minutes * 60:
+            return
+
+        notify_targets = self.get_cookie_notification_targets()
+        if not notify_targets:
+            self.plugin_logger.warning(
+                f"WeiboMonitor: {reason}，但未配置任何可提醒目标。请配置 cookie_notification_target。"
+            )
+            return
+
+        content = (
+            f"⚠️ 微博监控 Cookie 异常提醒\n\n"
+            f"原因：{reason}\n\n"
+            f"请重新获取 Cookie 后发送：/weibo_cookie <Cookie字符串>\n"
+            f"也可以发送 /weibo_cookie_help 查看获取步骤。"
+        )
+        chain = MessageChain().message(content)
+        sent_count = 0
+        for target in notify_targets:
+            try:
+                await self.context.send_message(target, chain)
+                sent_count += 1
+            except Exception as e:
+                self.plugin_logger.error(f"WeiboMonitor: Cookie 异常提醒发送到 {target} 失败: {e}")
+
+        if sent_count > 0:
+            self.cookie_invalid_notified = True
+            self._data["last_cookie_issue_notify_ts"] = now_ts
+            self._data["last_cookie_issue_reason"] = reason
+            self._save_data()
+            self.plugin_logger.warning(
+                f"WeiboMonitor: 已向 {sent_count}/{len(notify_targets)} 个目标发送 Cookie 异常提醒: {reason}"
+            )
+
+    @filter.command("weibo_cookie_help")
+    async def weibo_cookie_help(self, event: AstrMessageEvent):
+        """查看 Cookie 获取和更新步骤"""
+        yield event.plain_result(self._cookie_help_text())
+
     @filter.command("weibo_verify")
     async def weibo_verify(self, event: AstrMessageEvent):
         """验证当前配置的 Cookie 是否有效"""
         cookie = self.config.get("weibo_cookie", "")
         if not cookie:
-            yield event.plain_result("❌ 未配置 Cookie。")
+            yield event.plain_result("❌ 未配置 Cookie。\n\n" + self._cookie_help_text())
             return
 
         yield event.plain_result("🔍 正在验证 Cookie 有效性...")
@@ -760,7 +859,7 @@ class WeiboMonitor(Star):
                 cookie = parts[1].strip()
 
         if not cookie:
-            yield event.plain_result("❌ 请提供 Cookie。用法: /weibo_cookie <Cookie字符串>")
+            yield event.plain_result("❌ 请提供 Cookie。用法: /weibo_cookie <Cookie字符串>\n\n" + self._cookie_help_text())
             return
 
         self.config["weibo_cookie"] = cookie
@@ -788,6 +887,9 @@ class WeiboMonitor(Star):
                     user = data_obj.get("user")
                     user_info = f"当前登录用户: {user.get('screen_name')} (UID: {user.get('id')})" if user else f"已登录 (UID: {data_obj.get('uid')})"
                     save_msg = "✅ 配置已持久化保存" if saved else "⚠️ 配置已更新但未能持久化保存，重启后可能丢失"
+                    self._data.pop("last_cookie_issue_notify_ts", None)
+                    self._data.pop("last_cookie_issue_reason", None)
+                    self._save_data()
                     self.plugin_logger.info(f"WeiboMonitor: Cookie 已通过命令更换，{save_msg}")
                     yield event.plain_result(
                         f"✅ Cookie 更换成功！{user_info}\n{save_msg}\n"
@@ -884,7 +986,7 @@ class WeiboMonitor(Star):
             yield event.plain_result("❌ 热搜监控功能未开启，请先在插件设置中启用。")
             return
 
-        targets = self.get_targets()
+        targets = self.get_hotsearch_targets()
         if not targets:
             targets = [event.unified_msg_origin]
 
@@ -904,11 +1006,13 @@ class WeiboMonitor(Star):
     async def weibo_status(self, event: AstrMessageEvent):
         urls = self._parse_urls(self.config.get("weibo_urls", []))
         targets = self.get_targets()
+        hotsearch_targets = self.get_hotsearch_targets()
         subscribed_sessions = self._get_all_subscribed_sessions()
         
         status_lines = ["📊 微博监控当前状态："]
         status_lines.append(f"- 监控账号数：{len(urls)} 个")
-        status_lines.append(f"- 推送目标数：{len(targets)} 个")
+        status_lines.append(f"- 用户动态推送目标数：{len(targets)} 个")
+        status_lines.append(f"- 热搜推送目标数：{len(hotsearch_targets)} 个")
         
         if subscribed_sessions:
             status_lines.append(f"- 订阅分组：✅ 已为 {len(subscribed_sessions)} 个会话配置独立订阅")
@@ -928,7 +1032,9 @@ class WeiboMonitor(Star):
         has_active_push = bool(targets and cookie)
         if subscribed_sessions:
             has_active_push = bool(cookie and (subscribed_sessions or any(t not in subscribed_sessions for t in targets)))
-        status_lines.append(f"- 自动推送：{'✅ 开启' if has_active_push else '❌ 关闭'}")
+        status_lines.append(f"- 用户动态自动推送：{'✅ 开启' if has_active_push else '❌ 关闭'}")
+        telegram_album = bool(self.config.get("telegram_bot_token", "")) and self.config.get("telegram_media_group_enabled", True)
+        status_lines.append(f"- Telegram 合并媒体：{'✅ 开启' if telegram_album else '❌ 未配置 Bot Token 或已关闭'}")
         
         daily_summary = self.config.get("enable_daily_summary", False)
         if daily_summary:
@@ -942,6 +1048,10 @@ class WeiboMonitor(Star):
             hotsearch_interval = self.config.get("hotsearch_interval", DEFAULT_HOTSEARCH_INTERVAL)
             hotsearch_top_n = self.config.get("hotsearch_top_n", DEFAULT_HOTSEARCH_TOP_N)
             status_lines.append(f"- 热搜监控：✅ 开启 (每 {hotsearch_interval} 分钟, Top {hotsearch_top_n})")
+            if self.config.get("hotsearch_target_conversation_id"):
+                status_lines.append("  （热搜使用 hotsearch_target_conversation_id 独立目标）")
+            else:
+                status_lines.append("  （热搜未单独配置目标，兼容使用用户动态推送目标）")
         else:
             status_lines.append(f"- 热搜监控：❌ 关闭")
 
@@ -1093,9 +1203,9 @@ class WeiboMonitor(Star):
                 if self.config.get("enable_hotsearch", False):
                     hotsearch_interval = max(5, self.config.get("hotsearch_interval", DEFAULT_HOTSEARCH_INTERVAL))
                     if asyncio.get_event_loop().time() - self.last_hotsearch_time >= hotsearch_interval * 60:
-                        targets = self.get_targets()
+                        targets = self.get_hotsearch_targets()
                         if not targets:
-                            self.plugin_logger.debug("WeiboMonitor: 未配置推送目标，跳过热搜推送")
+                            self.plugin_logger.debug("WeiboMonitor: 未配置热搜推送目标，跳过热搜推送")
                         else:
                             self.plugin_logger.info("开始获取微博热搜数据...")
                             try:
@@ -1121,46 +1231,24 @@ class WeiboMonitor(Star):
                     
                     if not cookie:
                         self.plugin_logger.warning("WeiboMonitor: 未配置微博Cookie，跳过本轮检查。请尽快配置！")
+                        await self._notify_cookie_issue("未配置微博 Cookie，用户动态监控无法抓取", force=not self.cookie_invalid_notified)
                     elif not urls:
                         self.plugin_logger.debug("WeiboMonitor: 未配置监控URL")
                     elif not targets and not self._get_all_subscribed_sessions():
-                        self.plugin_logger.debug("WeiboMonitor: 未配置推送目标会话ID")
+                        self.plugin_logger.debug("WeiboMonitor: 未配置微博用户动态推送目标会话ID")
                     else:
                         # 检查 Cookie 健康
                         is_cookie_healthy = await self._check_cookie_health()
                         if not is_cookie_healthy:
-                            if not self.cookie_invalid_notified:
-                                self.plugin_logger.warning("WeiboMonitor: 检测到 Cookie 已失效！已向用户发送通知。")
-                                chain = MessageChain().message("⚠️ 微博监控助手提醒：检测到您的微博 Cookie 已失效，插件将无法正常抓取数据。请尽快在后台更新 Cookie 以恢复监控功能！")
-                                
-                                # 获取通知目标：优先使用专门配置的通知目标，否则使用默认推送目标
-                                notification_target = self.config.get("cookie_notification_target", "")
-                                if isinstance(notification_target, str) and notification_target.strip():
-                                    notify_targets = [t.strip() for t in notification_target.split(",") if t.strip()]
-                                elif isinstance(notification_target, list) and notification_target:
-                                    notify_targets = []
-                                    for item in notification_target:
-                                        item_str = str(item).strip()
-                                        if "," in item_str:
-                                            notify_targets.extend([t.strip() for t in item_str.split(",") if t.strip()])
-                                        elif item_str:
-                                            notify_targets.append(item_str)
-                                    if not notify_targets:
-                                        notify_targets = targets
-                                else:
-                                    notify_targets = list(set(targets) | self._get_all_subscribed_sessions())
-                                    
-                                for target in notify_targets:
-                                    try:
-                                        await self.context.send_message(target, chain)
-                                    except:
-                                        pass
-                                self.cookie_invalid_notified = True
+                            await self._notify_cookie_issue("微博 Cookie 已失效或未登录，用户动态监控已暂停")
                             self.plugin_logger.debug("WeiboMonitor: Cookie 已失效，跳过本轮抓取。")
                         else:
                             if self.cookie_invalid_notified:
                                 self.plugin_logger.info("WeiboMonitor: 检测到 Cookie 已更新为有效状态。")
                                 self.cookie_invalid_notified = False # 恢复通知标志
+                                self._data.pop("last_cookie_issue_notify_ts", None)
+                                self._data.pop("last_cookie_issue_reason", None)
+                                self._save_data()
 
                             self.plugin_logger.info(f"开始新一轮监控检查，共 {len(urls)} 个账号")
                             base_req_interval = self.config.get("request_interval", DEFAULT_REQUEST_INTERVAL)
@@ -1233,6 +1321,222 @@ class WeiboMonitor(Star):
             except Exception as e:
                 self.plugin_logger.error(f"WeiboMonitor: 检查URL {url} 时出错: {e}")
 
+    def _normalize_media_url(self, url: Any) -> str:
+        """规范化微博返回的媒体 URL。"""
+        if not url:
+            return ""
+        url = str(url).strip()
+        if not url:
+            return ""
+        if url.startswith("//"):
+            return f"https:{url}"
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        return ""
+
+    def _pick_image_url(self, pic: Dict[str, Any]) -> str:
+        """从微博图片对象中选取尽量高清的图片 URL。"""
+        for key in ("large", "original", "largest", "bmiddle", "middleplus"):
+            value = pic.get(key)
+            if isinstance(value, dict):
+                url = self._normalize_media_url(value.get("url"))
+                if url:
+                    return url
+            elif isinstance(value, str):
+                url = self._normalize_media_url(value)
+                if url:
+                    return url
+
+        for key in ("original_pic", "bmiddle_pic", "thumbnail_pic", "url"):
+            url = self._normalize_media_url(pic.get(key))
+            if url:
+                return url
+        return ""
+
+    def _extract_image_urls_from_mblog(self, mblog: Dict[str, Any]) -> List[str]:
+        """提取单条微博中的图片 URL。"""
+        urls: List[str] = []
+        for pic in mblog.get("pics") or []:
+            if not isinstance(pic, dict):
+                continue
+            url = self._pick_image_url(pic)
+            if url and url not in urls:
+                urls.append(url)
+
+        # 部分微博将单图放在独立字段中，pics 为空时兜底读取。
+        for key in ("original_pic", "bmiddle_pic", "thumbnail_pic"):
+            url = self._normalize_media_url(mblog.get(key))
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_video_url_from_media_info(self, media_info: Dict[str, Any]) -> str:
+        """从微博 media_info 中选取可直接发送的视频 URL。"""
+        candidate_keys = (
+            "mp4_720p_mp4",
+            "mp4_hd_url",
+            "mp4_sd_url",
+            "stream_url_hd",
+            "stream_url",
+        )
+        for key in candidate_keys:
+            url = self._normalize_media_url(media_info.get(key))
+            if url:
+                return url
+
+        for item in media_info.get("playback_list") or []:
+            if not isinstance(item, dict):
+                continue
+            play_info = item.get("play_info") or {}
+            url = self._normalize_media_url(play_info.get("url"))
+            if url:
+                return url
+        return ""
+
+    def _extract_video_urls_from_mblog(self, mblog: Dict[str, Any]) -> List[str]:
+        """提取单条微博中的视频 URL。"""
+        urls: List[str] = []
+        page_info = mblog.get("page_info") or {}
+        if isinstance(page_info, dict):
+            media_info = page_info.get("media_info") or {}
+            if isinstance(media_info, dict):
+                url = self._extract_video_url_from_media_info(media_info)
+                if url:
+                    urls.append(url)
+
+            for key in ("page_url", "object_url"):
+                url = self._normalize_media_url(page_info.get(key))
+                if url and any(mark in url.lower() for mark in (".mp4", "video")) and url not in urls:
+                    urls.append(url)
+
+        for media_info in mblog.get("mix_media_info", {}).get("items", []) if isinstance(mblog.get("mix_media_info"), dict) else []:
+            if not isinstance(media_info, dict):
+                continue
+            data = media_info.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            url = self._extract_video_url_from_media_info(data.get("media_info") or data)
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_media_from_mblog(self, mblog: Dict[str, Any]) -> Dict[str, List[str]]:
+        """提取微博正文和被转发微博中的图片、视频 URL。"""
+        images: List[str] = []
+        videos: List[str] = []
+
+        def add_media(source: Dict[str, Any]):
+            for image_url in self._extract_image_urls_from_mblog(source):
+                if image_url not in images:
+                    images.append(image_url)
+            for video_url in self._extract_video_urls_from_mblog(source):
+                if video_url not in videos:
+                    videos.append(video_url)
+
+        add_media(mblog)
+        retweeted = mblog.get("retweeted_status")
+        if isinstance(retweeted, dict):
+            add_media(retweeted)
+
+        max_images = max(0, int(self.config.get("max_images_per_post", DEFAULT_MAX_IMAGES_PER_POST)))
+        max_videos = max(0, int(self.config.get("max_videos_per_post", DEFAULT_MAX_VIDEOS_PER_POST)))
+        return {
+            "images": images[:max_images],
+            "videos": videos[:max_videos],
+        }
+
+    def _parse_telegram_chat_id(self, target: str) -> Optional[str]:
+        """从 Telegram 的 unified_msg_origin 中解析 chat_id。"""
+        if not target:
+            return None
+        parts = target.split(":", 2)
+        if len(parts) != 3:
+            return None
+        platform_name, _, session_id = parts
+        if "telegram" not in platform_name.lower():
+            return None
+        return session_id.strip() or None
+
+    def _truncate_telegram_caption(self, content: str) -> str:
+        """Telegram 媒体 caption 最多 1024 字符，超长时保留链接并截断。"""
+        if len(content) <= TELEGRAM_CAPTION_LIMIT:
+            return content
+
+        link_match = re.search(r"https?://\S+", content)
+        suffix = "\n\n……内容过长已截断，请打开原文查看。"
+        if link_match:
+            suffix += f"\n{link_match.group(0)}"
+        if len(suffix) >= TELEGRAM_CAPTION_LIMIT:
+            return suffix[-TELEGRAM_CAPTION_LIMIT:]
+        keep_len = TELEGRAM_CAPTION_LIMIT - len(suffix)
+        return content[:max(0, keep_len)].rstrip() + suffix
+
+    async def _send_telegram_combined_post(self, target: str, content: str, post: Dict[str, Any]) -> bool:
+        """通过 Telegram Bot API 将一条微博的媒体合并为单条媒体消息/媒体组。"""
+        if not self.config.get("telegram_media_group_enabled", True):
+            return False
+
+        token = str(self.config.get("telegram_bot_token", "")).strip()
+        chat_id = self._parse_telegram_chat_id(target)
+        if not token or not chat_id:
+            return False
+
+        media_items = []
+        for image_url in post.get("images", []):
+            media_items.append({"type": "photo", "media": image_url})
+        for video_url in post.get("videos", []):
+            media_items.append({"type": "video", "media": video_url})
+
+        if not media_items:
+            return False
+
+        caption = self._truncate_telegram_caption(content)
+        api_base = f"https://api.telegram.org/bot{token}"
+        media_items = media_items[:TELEGRAM_MEDIA_GROUP_LIMIT]
+
+        try:
+            if len(media_items) == 1:
+                media = media_items[0]
+                endpoint = "sendPhoto" if media["type"] == "photo" else "sendVideo"
+                payload = {
+                    "chat_id": chat_id,
+                    "caption": caption,
+                    media["type"]: media["media"],
+                }
+            else:
+                media_items[0]["caption"] = caption
+                payload = {
+                    "chat_id": chat_id,
+                    "media": json.dumps(media_items, ensure_ascii=False),
+                }
+                endpoint = "sendMediaGroup"
+
+            resp = await self.client.post(f"{api_base}/{endpoint}", data=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok"):
+                    return True
+                self.plugin_logger.error(f"Telegram 合并媒体推送失败: {data}")
+            else:
+                self.plugin_logger.error(
+                    f"Telegram 合并媒体推送失败，状态码 {resp.status_code}: {resp.text[:500]}"
+                )
+        except Exception as e:
+            self.plugin_logger.error(f"Telegram 合并媒体推送异常: {e}")
+        return False
+
+    def _build_post_message_chain(self, content: str, post: Dict[str, Any]) -> MessageChain:
+        """构建包含文字、图片和视频的微博推送消息链。"""
+        chain = MessageChain().message(content)
+        if not self.config.get("send_media", True):
+            return chain
+
+        for image_url in post.get("images", []):
+            chain.chain.append(Comp.Image.fromURL(image_url))
+        for video_url in post.get("videos", []):
+            chain.chain.append(Comp.Video.fromURL(video_url))
+        return chain
+
     async def _send_new_posts(self, new_posts: List[dict], targets: List[str], msg_format: str, 
                                fallback_target: str = None, skip_log: bool = False):
         """发送新微博到指定目标"""
@@ -1248,8 +1552,6 @@ class WeiboMonitor(Star):
                 weibo=post["text"],
                 link=post["link"],
             )
-            chain = MessageChain().message(content)
-            
             send_targets = targets
             
             if not send_targets:
@@ -1257,12 +1559,35 @@ class WeiboMonitor(Star):
                 continue
                 
             sent_count = 0
+            has_media = bool(post.get("images") or post.get("videos")) and self.config.get("send_media", True)
             for target in send_targets:
                 try:
-                    await self.context.send_message(target, chain)
+                    if has_media and self._parse_telegram_chat_id(target):
+                        if await self._send_telegram_combined_post(target, content, post):
+                            sent_count += 1
+                            continue
+
+                        self.plugin_logger.warning(
+                            "WeiboMonitor: Telegram 合并媒体推送不可用或失败，改为仅推送文本，避免图片/视频被拆成多条消息"
+                        )
+                        await self.context.send_message(target, MessageChain().message(content))
+                    else:
+                        chain = self._build_post_message_chain(content, post)
+                        await self.context.send_message(target, chain)
                     sent_count += 1
                 except Exception as e:
                     self.plugin_logger.error(f"WeiboMonitor: 推送到目标 {target} 时出错: {e}")
+                    if has_media:
+                        try:
+                            await self.context.send_message(target, MessageChain().message(content))
+                            sent_count += 1
+                            self.plugin_logger.warning(
+                                f"WeiboMonitor: 已向 {target} 降级推送纯文本内容，媒体发送失败"
+                            )
+                        except Exception as fallback_error:
+                            self.plugin_logger.error(
+                                f"WeiboMonitor: 降级推送纯文本到目标 {target} 仍失败: {fallback_error}"
+                            )
             
             if sent_count > 0:
                 self.plugin_logger.info(
@@ -1323,6 +1648,8 @@ class WeiboMonitor(Star):
                     resp = await self.client.get(api_url, headers=self.get_headers(uid))
                 if resp.status_code != 200:
                     self.plugin_logger.error(f"WeiboMonitor: 接口请求失败 (状态码 {resp.status_code}), UID: {uid}")
+                    if resp.status_code in (401, 403):
+                        await self._notify_cookie_issue(f"微博接口返回 {resp.status_code}，Cookie 可能已失效")
                     return []
                 try:
                     data = resp.json()
@@ -1330,7 +1657,10 @@ class WeiboMonitor(Star):
                     self.plugin_logger.error(f"WeiboMonitor: 解析接口返回的JSON数据失败, UID: {uid}, 错误: {e}")
                     return []
                 if data.get("ok") != 1:
-                    self.plugin_logger.debug(f"WeiboMonitor: 接口返回数据状态异常, UID: {uid}")
+                    self.plugin_logger.debug(f"WeiboMonitor: 接口返回数据状态异常, UID: {uid}, 返回: {data}")
+                    message = str(data.get("msg") or data.get("message") or "")
+                    if any(keyword in message for keyword in ("登录", "login", "权限", "cookie", "Cookie")):
+                        await self._notify_cookie_issue(f"微博接口提示需要重新登录：{message or 'Cookie 可能已失效'}")
                     return []
                 return (data.get("data") or {}).get("cards", [])
             except Exception as e:
@@ -1498,11 +1828,14 @@ class WeiboMonitor(Star):
             created_at_raw = mblog.get("created_at")
             created_at = self._parse_weibo_time(created_at_raw)
             
+            media = self._extract_media_from_mblog(mblog)
             new_posts.append({
                 "text": text, 
                 "link": link, 
                 "username": username,
-                "created_at": created_at
+                "created_at": created_at,
+                "images": media["images"],
+                "videos": media["videos"],
             })
 
             if force_fetch:

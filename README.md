@@ -13,6 +13,7 @@
 - **Cookie 配置**：必须配置微博 Cookie 才能正常抓取数据，确保稳定性。
 - **灵活过滤**：支持屏蔽词过滤、白名单关键词过滤，可选择是否推送原创/转发微博。
 - **消息自定义**：支持自定义推送消息格式，满足不同需求。
+- **图文视频推送**：推送微博正文时可同步发送对应图片和视频，转发微博会同时提取被转发内容中的媒体。
 - **配置导入导出**：支持配置的导入导出，方便迁移和备份。
 - **数据持久化**：自动持久化监控数据，重启后不会重复推送历史微博。
 - **错误恢复**：内置请求重试和异常处理机制，保证监控稳定性。
@@ -50,25 +51,32 @@
    - `check_interval_jitter`: 检查间隔随机浮动范围（分钟），避免固定间隔被反爬识别，默认 0。
    - `request_interval`: 账号请求间隔（秒），默认 5 秒。监控多个账号时，每个账号抓取之间会等待该时长，避免请求过快。
    - `request_interval_jitter`: 请求间隔随机浮动范围（秒），默认 0。
-   - `target_conversation_id`: 填入第 2 步获取的会话 ID。支持填入多个 ID，用逗号分隔。
+   - `target_conversation_id`: 微博用户动态推送目标会话 ID。支持填入多个 ID，用逗号分隔。
+   - `hotsearch_target_conversation_id`: **可选**。微博热搜推送目标会话 ID。配置后热搜和用户动态可以推送到不同会话；为空时兼容使用 `target_conversation_id`。
    - `subscription_mappings`: **可选**。会话订阅映射列表，格式为 `会话ID: uid或链接,uid或链接`，每行配置一个会话的订阅关系。配置后，该会话将只接收已订阅博主的微博推送；未出现在此配置中的全局目标（`target_conversation_id`）仍会接收全部推送。
-   - `cookie_notification_target`: **可选**。填入 Cookie 失效时的通知目标会话 ID。如果不填写，则向 `target_conversation_id` 中所有的群/账号发送通知；如果填写，则仅向该 ID 发送通知。
+   - `cookie_notification_target`: **可选**。填入 Cookie 失效时的通知目标会话 ID。如果不填写，则通知用户动态目标、热搜目标和订阅分组目标。
+   - `cookie_notification_interval`: Cookie 异常重复提醒间隔（分钟），默认 `60`，避免刷屏。
    - `message_format`: 自定义推送消息格式，支持 `{name}`、`{weibo}`、`{link}` 变量。
    - `filter_keywords`: 屏蔽词列表，包含这些关键词的微博将不会被推送，多个关键词用逗号分隔。
    - `whitelist_keywords`: 关键词白名单，只有微博正文包含白名单关键词时才会推送。为空时不限制。
    - `send_original`: 是否推送原创微博，默认 `true`。
-  - `send_forward`: 是否推送转发微博，默认 `true`。
-  - `enable_plugin_log`: 是否开启运行日志 (plugin.log)，默认 `false`。
-  - `plugin_log_max_size`: 运行日志文件最大大小 (MB)，默认 `1`。
-  - `enable_daily_log`: 是否开启每日推送记录，默认 `false`。开启后，初始化监控时会自动记录获取到的历史微博，热搜推送也会同步记录。
-  - `enable_daily_summary`: 是否开启每日发送总结，默认 `false`。总结中包含微博动态和热搜推送次数。
-  - `daily_summary_time`: 每日总结推送时间，默认 `08:00`。
-  - `enable_hotsearch`: 是否开启微博热搜监控，默认 `false`。**热搜监控默认无需 Cookie，遇风控拦截自动使用 Cookie 兜底**。
-  - `hotsearch_interval`: 热搜推送间隔（分钟），默认 `60`（1 小时）。
-  - `hotsearch_top_n`: 推送热搜前 N 条，默认 `10`。
-  - `hotsearch_filter_ads`: 是否过滤热搜广告位，默认 `true`（开启）。
-  - `hotsearch_show_link`: 是否显示每条热搜的微博搜索链接，默认 `true`（开启）。关闭后仅显示序号和标题。
-  - `hotsearch_message_format`: 热搜推送消息格式，支持 `{top_n}`、`{time}`、`{items}` 变量。
+   - `send_forward`: 是否推送转发微博，默认 `true`。
+   - `send_media`: 是否随微博推送图片和视频，默认 `true`。开启后会提取微博正文及转发微博中的媒体并随消息发送。
+   - `max_images_per_post`: 单条微博最多推送图片数，默认 `9`，设置为 `0` 可不推送图片。
+   - `max_videos_per_post`: 单条微博最多推送视频数，默认 `1`，设置为 `0` 可不推送视频。视频发送能力取决于具体消息平台。
+   - `telegram_bot_token`: **Telegram 推荐配置**。填写 Telegram Bot Token 后，插件会直接调用 Telegram Bot API，把一条微博的文字、照片和视频合并成一条媒体消息/媒体组，而不是让 AstrBot 默认适配器拆开发送。
+   - `telegram_media_group_enabled`: 是否启用 Telegram 合并媒体推送，默认 `true`。
+   - `enable_plugin_log`: 是否开启运行日志 (plugin.log)，默认 `false`。
+   - `plugin_log_max_size`: 运行日志文件最大大小 (MB)，默认 `1`。
+   - `enable_daily_log`: 是否开启每日推送记录，默认 `false`。开启后，初始化监控时会自动记录获取到的历史微博，热搜推送也会同步记录。
+   - `enable_daily_summary`: 是否开启每日发送总结，默认 `false`。总结中包含微博动态和热搜推送次数。
+   - `daily_summary_time`: 每日总结推送时间，默认 `08:00`。
+   - `enable_hotsearch`: 是否开启微博热搜监控，默认 `false`。**热搜监控默认无需 Cookie，遇风控拦截自动使用 Cookie 兜底**。
+   - `hotsearch_interval`: 热搜推送间隔（分钟），默认 `60`（1 小时）。
+   - `hotsearch_top_n`: 推送热搜前 N 条，默认 `10`。
+   - `hotsearch_filter_ads`: 是否过滤热搜广告位，默认 `true`（开启）。
+   - `hotsearch_show_link`: 是否显示每条热搜的微博搜索链接，默认 `true`（开启）。关闭后仅显示序号和标题。
+   - `hotsearch_message_format`: 热搜推送消息格式，支持 `{top_n}`、`{time}`、`{items}` 变量。
 
 ## 关键词过滤规则
 
@@ -136,9 +144,23 @@
 链接: {link}
 ```
 
+## 图片与视频推送
+
+插件默认会在推送微博文字的同时，提取并发送该微博对应的图片和视频：
+
+- 原创微博：提取正文中的图片和视频。
+- 转发微博：除了转发正文，也会提取被转发微博中的图片和视频。
+- 图片默认最多推送 9 张，视频默认最多推送 1 个，可分别通过 `max_images_per_post` 和 `max_videos_per_post` 调整。
+- 如果你只想推送文字，可将 `send_media` 设为 `false`。
+- **Telegram 合并推送**：如果填写 `telegram_bot_token` 且目标会话是 Telegram，插件会使用 Telegram `sendPhoto` / `sendVideo` / `sendMediaGroup`，将一条微博的文字作为 caption，与照片、视频合并为一条媒体消息或媒体组，避免被拆成多条独立消息。
+- Telegram caption 有 1024 字符限制；超长微博会保留原文链接并截断 caption。
+- 如果 Telegram 合并媒体推送失败，插件会降级发送纯文本，避免图片/视频被拆成多条消息。
+
 ## 热搜监控
 
 热搜监控功能默认关闭，开启后可定时推送微博热搜榜前 N 条，**默认无需配置 Cookie 即可使用（遇风控拦截时会自动使用配置好的 Cookie 兜底）**。
+
+热搜推送目标可通过 `hotsearch_target_conversation_id` 单独配置；如果不配置，则沿用 `target_conversation_id`，兼容旧版本。这样可以把“用户动态监控”和“微博热搜榜”推送到不同 Telegram 群/频道/私聊。
 
 ### 热搜消息格式
 
@@ -242,6 +264,7 @@ user_xyz789: 1234567890
 ## 常用指令
 - `/weibo_umo`: 获取当前会话 ID（用于配置推送目标）。
 - `/weibo_verify`: 验证当前设置的 Cookie 是否有效。
+- `/weibo_cookie_help`: 查看 Cookie 获取与更新步骤。
 - `/weibo_check`: 立即抓取列表里第一个账号并推送最新一条微博。
 - `/weibo_check_all`: 立即抓取列表里所有账号并推送最新一条微博。
 - `/weibo_status`: 查看当前监控状态（监控账号数、推送目标、检查间隔等）。
@@ -261,7 +284,10 @@ user_xyz789: 1234567890
 2. 按 `F12` 打开开发者工具，切换到 `网络 (Network)` 选项卡。
 3. 刷新页面，在左侧列表中找到第一个 `m.weibo.cn` 的请求（或者任何一个 `getIndex` 请求）。
 4. 在右侧的 `请求标头 (Request Headers)` 中找到 `Cookie` 字段。
-5. 复制该字段的完整值，粘贴到插件设置的 `weibo_cookie` 中。
+5. 复制该字段的完整值，粘贴到插件设置的 `weibo_cookie` 中，或在安全会话中发送 `/weibo_cookie <Cookie字符串>` 更新。
+6. 发送 `/weibo_verify` 可立即验证 Cookie 是否有效。
+
+插件会在 Cookie 未配置、`/api/config` 检测为未登录、或微博动态接口提示需要重新登录时，向 `cookie_notification_target`（未配置则向所有推送目标）发送提醒。
 
 ### Cookie 注意事项
 - Cookie具有有效期，失效后需要重新获取
